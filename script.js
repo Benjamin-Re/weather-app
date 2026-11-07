@@ -1,141 +1,137 @@
-let key = 'YGQXXTBLD2RNF86HFW9ZKJ6Z6'
 let place = 'Vaasa'
-let unitGroup = 'metric' // metric, us, uk, base
-let today = new Date();
-let year = today.getFullYear();
-let month = today.getMonth() + 1; // Months are zero-indexed, so add 1
-let day = today.getDate();
-let date1 = `${year}-${month}-${day}`
-let future = new Date()
-future.setDate(today.getDate() + 5)
-let futureYear = future.getFullYear();
-let futureMonth = future.getMonth() + 1
-let futureDay = future.getDate()
-let date2 = `${futureYear}-${futureMonth}-${futureDay}`
+let temperatureUnit = 'celsius'
 
-async function getData () {
-    let url = `https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/${place}/${date1}/${date2}?unitGroup=${unitGroup}&key=${key}&contentType=json`
-    try {
-        const res = await fetch(url, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            mode: 'cors'
-        })
-
-        if(!res.ok) {
-            throw new Error('error res status ' + res.status)
-        }
-        const data = await res.json()
-        console.log(data)
-        return data.days
-
-    } catch (e) {
-        console.log(e)
-    } 
+async function fetchJson(url) {
+    const response = await fetch(url)
+    if (!response.ok) {
+        throw new Error(`Weather service returned ${response.status}`)
+    }
+    return response.json()
 }
 
-// Paints the temperatures
-async function addElems() { 
-    let main = document.querySelector('.main')
-    let data = await getData()
-    let today = data[0].hours
-    let todayDiv = document.querySelector('.today')
-    if(todayDiv === null) {
-        todayDiv = document.createElement('div')
-        todayDiv.className = 'today'
-        main.append(todayDiv)
-    } else {
-        todayDiv.innerHTML = ''
-    }
-    today.forEach(hour => {
-        let tempCard = document.createElement('div')
-        tempCard.className = 'tempCard'
-        let hourDiv = document.createElement('div')
-        hourDiv.innerHTML = hour.datetime
-        tempCard.append(hourDiv)
-        let icon = hour.icon
-        let image = document.createElement('img')
-        image.src = './images/' + icon + '.png'
-        tempCard.append(image)
-        let tempDiv = document.createElement('div')
-        tempDiv.innerHTML = hour.temp + '°'
-        tempCard.append(tempDiv)
-        todayDiv.append(tempCard)
+async function getData(locationName) {
+    const geocodingUrl = new URL('https://geocoding-api.open-meteo.com/v1/search')
+    geocodingUrl.search = new URLSearchParams({
+        name: locationName,
+        count: '1',
+        language: 'en',
+        format: 'json'
     })
 
-    getImage(data[0].icon)
-
-
-    let header = document.querySelector('h1')
-    header.innerHTML = place
-
-    let temp = data[0].temp
-    console.log(`temp: ${temp}`)
-    let backgroundClass = ''
-    if(temp > 20) {
-        backgroundClass = 'hot'
-    } else if (temp > 15) {
-        backgroundClass = 'medium'
-    } else {
-        backgroundClass = 'cold'
+    const locations = await fetchJson(geocodingUrl)
+    const location = locations.results && locations.results[0]
+    if (!location) {
+        throw new Error(`No location found for "${locationName}".`)
     }
-    main.classList.remove('hot', 'medium', 'cold');
-    main.classList.add(backgroundClass)
+
+    const forecastUrl = new URL('https://api.open-meteo.com/v1/forecast')
+    forecastUrl.search = new URLSearchParams({
+        latitude: location.latitude,
+        longitude: location.longitude,
+        hourly: 'temperature_2m,weather_code,is_day',
+        daily: 'temperature_2m_max',
+        forecast_days: '6',
+        timezone: 'auto',
+        temperature_unit: temperatureUnit
+    })
+
+    return {
+        location,
+        forecast: await fetchJson(forecastUrl)
+    }
 }
 
+function getWeatherIcon(code, isDay) {
+    if (code === 0) return isDay ? 'clear-day' : 'clear-night'
+    if (code === 1 || code === 2) return isDay ? 'partly-cloudy-day' : 'partly-cloudy-night'
+    if (code === 3) return 'cloudy'
+    if (code === 45 || code === 48) return 'fog'
+    if (code >= 51 && code <= 67) return 'rain'
+    if (code >= 71 && code <= 77) return 'snow'
+    if (code >= 80 && code <= 82) return isDay ? 'showers-day' : 'showers-night'
+    if (code === 85 || code === 86) return isDay ? 'snow-showers-day' : 'snow-showers-night'
+    if (code >= 95) return 'thunder-rain'
+    return 'cloudy'
+}
 
+async function addElems() {
+    const main = document.querySelector('.main')
+    main.textContent = 'Loading weather...'
+
+    try {
+        const { location, forecast } = await getData(place)
+        const today = forecast.daily.time[0]
+        const todayDiv = document.createElement('div')
+        todayDiv.className = 'today'
+
+        forecast.hourly.time.forEach((time, index) => {
+            if (!time.startsWith(`${today}T`)) return
+
+            const tempCard = document.createElement('div')
+            tempCard.className = 'tempCard'
+
+            const hourDiv = document.createElement('div')
+            hourDiv.textContent = time.split('T')[1]
+            tempCard.append(hourDiv)
+
+            const image = document.createElement('img')
+            image.src = `./images/${getWeatherIcon(
+                forecast.hourly.weather_code[index],
+                forecast.hourly.is_day[index]
+            )}.png`
+            image.alt = ''
+            tempCard.append(image)
+
+            const tempDiv = document.createElement('div')
+            const unit = temperatureUnit === 'celsius' ? '°C' : '°F'
+            tempDiv.textContent = `${Math.round(forecast.hourly.temperature_2m[index])}${unit}`
+            tempCard.append(tempDiv)
+
+            todayDiv.append(tempCard)
+        })
+
+        main.replaceChildren(todayDiv)
+        document.querySelector('h1').textContent = location.name
+
+        const maxTemp = forecast.daily.temperature_2m_max[0]
+        const warmThreshold = temperatureUnit === 'celsius' ? 20 : 68
+        const mildThreshold = temperatureUnit === 'celsius' ? 15 : 59
+        const backgroundClass = maxTemp > warmThreshold ? 'hot' : maxTemp > mildThreshold ? 'medium' : 'cold'
+        main.classList.remove('hot', 'medium', 'cold')
+        main.classList.add(backgroundClass)
+    } catch (error) {
+        console.error(error)
+        main.textContent = error.message || 'Could not load weather.'
+    }
+}
 
 function handleClick() {
-    place = input.value
+    const newPlace = input.value.trim()
+    if (!newPlace) return
+    place = newPlace
     addElems()
 }
 
 const header = document.querySelector('.header')
-let input = document.createElement('input')
+const input = document.createElement('input')
+input.placeholder = 'Enter a city'
+input.setAttribute('aria-label', 'City')
 input.addEventListener('keydown', event => {
-    if(event.key === 'Enter') {
-        handleClick()
-    }
+    if (event.key === 'Enter') handleClick()
 })
-// header elements
 header.append(input)
-let button = document.createElement('button')
-button.innerHTML = 'Submit'
+
+const button = document.createElement('button')
+button.textContent = 'Submit'
 button.addEventListener('click', handleClick)
+header.append(button)
 
 const toggleBtn = document.createElement('button')
-toggleBtn.innerHTML = 'Celsius/Fahrenheit'
-toggleBtn.addEventListener('click', handleToggle)
-
-function handleToggle() {
-    // us, uk, metric, base
-    unitGroup = (unitGroup === 'metric') ? 'us' : 'metric'
+toggleBtn.textContent = 'Celsius/Fahrenheit'
+toggleBtn.addEventListener('click', () => {
+    temperatureUnit = temperatureUnit === 'celsius' ? 'fahrenheit' : 'celsius'
     addElems()
-}
-
+})
 header.append(toggleBtn)
-header.append(button)
+
 addElems()
-
-
-function getImage (prompt) {
-    fetch(`https://api.giphy.com/v1/gifs/translate?api_key=J5yMscLZ72gs5DdFpmL2KnVmiJJzBBMS&s=${prompt}`, {mode: 'cors'})
-    .then(res => {
-        return res.json()
-    }).then(data => {
-        let imgSrc = './images/fallback.jpg'
-        if(data.data.images){
-            imgSrc = data.data.images.original.url
-        }
-        console.log('image loaded' + imgSrc)
-        document.body.style.backgroundImage = `url('${imgSrc}')`
-        document.body.style.backgroundSize = "cover";         // Scale the image to cover the entire screen
-        document.body.style.backgroundRepeat = "no-repeat";   // Prevent the image from repeating
-        document.body.style.backgroundPosition = "center";    // Center the image      
-        document.body.style.height = "100vh";     
-    }).catch(e => {
-        console.log(e)
-    })
-}
